@@ -81,4 +81,40 @@ os.environ.pop("ADMIN_TOKEN")
 step("5. with ADMIN_TOKEN set: no token 403, wrong token 403, right token 200",
      (no_token, wrong, right) == (403, 403, 200), f"got {(no_token, wrong, right)}")
 
+# 6. health check (no LLM)
+h = client.get("/healthz")
+step("6. /healthz answers ok for the hosting platform", h.status_code == 200 and h.json() == {"status": "ok"})
+
+# 7. cost protection: limits are checked before any LLM call
+os.environ["RATE_LIMIT_PER_IP"] = "0"
+r_ip = client.post("/api/chat", json={"message": "hi"}, headers={"X-Forwarded-For": "203.0.113.7, 10.0.0.1"})
+os.environ["RATE_LIMIT_PER_IP"] = "20"
+os.environ["DAILY_MESSAGE_LIMIT"] = "0"
+r_day = client.post("/api/chat", json={"message": "hi"}, headers={"X-Forwarded-For": "203.0.113.8"})
+os.environ.pop("DAILY_MESSAGE_LIMIT")
+step("7. per-visitor and daily message limits answer 429 with a friendly message",
+     r_ip.status_code == 429 and "wait" in r_ip.json()["error"]
+     and r_day.status_code == 429 and "daily" in r_day.json()["error"],
+     f"ip={r_ip.status_code} {r_ip.text[:80]}, day={r_day.status_code} {r_day.text[:80]}")
+
+# 8. on Render the admin API never trusts "local" visitors: it needs the token
+os.environ["RENDER"] = "true"
+on_render = client.get("/api/admin/questions").status_code
+os.environ.pop("RENDER")
+step("8. on Render (RENDER=true, no token) the admin API is closed", on_render == 403, f"got {on_render}")
+
+# 9. demo answers are loaded on a fresh host, but never over existing data
+import knowledge  # noqa: E402
+
+fresh = Path(tempfile.mkdtemp()) / "questions.json"
+old_file = os.environ["KNOWLEDGE_FILE"]
+os.environ["KNOWLEDGE_FILE"] = str(fresh)
+seed = Path(__file__).parent / "data" / "demo_answers.json"
+first, second = knowledge.seed_if_empty(seed), knowledge.seed_if_empty(seed)
+seeded = knowledge.load()
+os.environ["KNOWLEDGE_FILE"] = old_file
+step("9. demo answers: 3 loaded on a fresh host, 0 when data already exists",
+     first == 3 and second == 0 and all(q["status"] == "answered" and q["embedding"] for q in seeded),
+     f"first={first}, second={second}")
+
 print(f"\n{sum(results)}/{len(results)} passed")

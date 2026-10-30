@@ -101,6 +101,23 @@ def answer_question(qid: int, answer: str) -> dict:
         return q
 
 
+def seed_if_empty(seed_file: Path) -> int:
+    """Load example specialist answers when there is no questions file yet (e.g. a fresh cloud host).
+    Never touches an existing file. Returns how many answers were added."""
+    if not seed_file.exists():
+        return 0
+    with _lock:
+        if load():
+            return 0
+        items = []
+        for i, s in enumerate(json.loads(seed_file.read_text(encoding="utf-8")), 1):
+            items.append({"id": i, "question": s["question"], "reason": "demo answer loaded at start-up",
+                          "status": "answered", "times_asked": 0, "answer": s["answer"], "answered_at": _now(),
+                          "created_at": _now(), "last_asked_at": _now(), "embedding": _embed(s["question"])})
+        _save(items)
+        return len(items)
+
+
 def reject_question(qid: int) -> dict:
     with _lock:
         items = load()

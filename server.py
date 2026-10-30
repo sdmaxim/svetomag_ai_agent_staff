@@ -8,13 +8,20 @@ Web server: customer chat page + admin page for the difficult-questions loop.
     POST /api/admin/questions/{id}/answer   {"answer"}
     POST /api/admin/questions/{id}/reject
 
+    GET  /healthz             liveness check for the hosting platform (no LLM call)
+
 Built on Starlette (already installed with crewai, so no new dependency).
 Admin access: if the ADMIN_TOKEN environment variable is set, every admin request needs the
-header X-Admin-Token; if it is not set, the admin API only answers requests from this computer.
+header X-Admin-Token; if it is not set, the admin API only answers requests from this computer
+(never on Render, where it always requires the token).
+Cost protection (the chat is public and every message costs OpenAI money):
+    RATE_LIMIT_PER_IP     messages per visitor per 10 minutes  (default 20)
+    DAILY_MESSAGE_LIMIT   messages per day for everybody       (default 300)
 
 Usage (from the support_agent folder):
     .\\run.ps1 web            then open http://127.0.0.1:8000  and  http://127.0.0.1:8000/admin
 """
+import contextlib
 import os
 import secrets
 import threading
@@ -41,6 +48,39 @@ SESSION_TTL = 30 * 60       # a conversation is forgotten after 30 minutes witho
 
 _sessions: dict[str, dict] = {}     # session_id -> {"session", "lock", "last"}
 _sessions_lock = threading.Lock()
+
+RATE_WINDOW = 10 * 60
+_hits: dict[str, list[float]] = {}  # visitor ip -> times of recent messages
+_day = {"date": "", "count": 0}
+_rate_lock = threading.Lock()
+
+
+def _client_ip(request: Request) -> str:
+    # behind Render's proxy the visitor's address is the first entry of X-Forwarded-For
+    fwd = request.headers.get("x-forwarded-for", "")
+    return fwd.split(",")[0].strip() or (request.client.host if request.client else "unknown")
+
+
+def _rate_limited(ip: str) -> str | None:
+    """None if the message may go through, otherwise the reason it may not."""
+    per_ip = int(os.environ.get("RATE_LIMIT_PER_IP", 20))
+    per_day = int(os.environ.get("DAILY_MESSAGE_LIMIT", 300))
+    now, today = time.time(), time.strftime("%Y-%m-%d")
+    with _rate_lock:
+        if _day["date"] != today:
+            _day.update(date=today, count=0)
+        recent = [t for t in _hits.get(ip, []) if now - t < RATE_WINDOW]
+        if _day["count"] >= per_day:
+            return "The demo has reached its daily message limit. Please come back tomorrow."
+        if len(recent) >= per_ip:
+            return "You are sending messages very fast. Please wait a few minutes and try again."
+        recent.append(now)
+        _hits[ip] = recent
+        _day["count"] += 1
+        if len(_hits) > 5000:   # forget idle visitors so memory stays small
+            for k in [k for k, v in _hits.items() if now - v[-1] > RATE_WINDOW]:
+                del _hits[k]
+    return None
 
 
 def _get_session(session_id: str | None) -> tuple[str, dict]:
@@ -90,6 +130,9 @@ async def chat(request: Request):
         return JSONResponse({"error": "empty message"}, status_code=400)
     if len(message) > MAX_MESSAGE:
         return JSONResponse({"error": f"message too long (max {MAX_MESSAGE} characters)"}, status_code=400)
+    limited = _rate_limited(_client_ip(request))
+    if limited:
+        return JSONResponse({"session_id": body.get("session_id"), "error": limited}, status_code=429)
     session_id, entry = _get_session(body.get("session_id"))
     try:
         result = await run_in_threadpool(_chat_turn, entry, message)
@@ -104,6 +147,8 @@ def _admin_allowed(request: Request) -> bool:
     token = os.environ.get("ADMIN_TOKEN")
     if token:
         return secrets.compare_digest(request.headers.get("x-admin-token", ""), token)
+    if os.environ.get("RENDER"):   # Render sets RENDER=true: on a public host there is no "local" visitor
+        return False
     return request.client is not None and request.client.host in ("127.0.0.1", "::1", "localhost", "testclient")
 
 
@@ -149,6 +194,10 @@ async def admin_reject(request: Request):
     return JSONResponse({"question": _public(q)})
 
 
+async def healthz(request: Request):
+    return JSONResponse({"status": "ok"})
+
+
 async def page_chat(request: Request):
     return FileResponse(WEB / "chat.html")
 
@@ -157,8 +206,19 @@ async def page_admin(request: Request):
     return FileResponse(WEB / "admin.html")
 
 
-app = Starlette(routes=[
+@contextlib.asynccontextmanager
+async def lifespan(app):
+    # On a fresh host (Render's free plan forgets files on every restart) load the demo answers,
+    # so the difficult-question loop can be shown at once.
+    added = await run_in_threadpool(knowledge.seed_if_empty, Path(__file__).parent / "data" / "demo_answers.json")
+    if added:
+        print(f"[startup] loaded {added} demo specialist answers", flush=True)
+    yield
+
+
+app = Starlette(lifespan=lifespan, routes=[
     Route("/", page_chat),
+    Route("/healthz", healthz),
     Route("/admin", page_admin),
     Route("/api/chat", chat, methods=["POST"]),
     Route("/api/admin/questions", admin_questions),
