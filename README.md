@@ -1,0 +1,82 @@
+# Svetomag support agent
+
+An English customer-support agent for an online lighting shop (8,597 real products).
+A customer asks a question; the agent asks a follow-up question if needed, searches the
+catalogue, checks price and stock, uses skill files for know-how, and hands questions it
+cannot answer to a human. Once a human answers, the agent reuses that answer.
+
+Built with CrewAI 1.15 (one agent, custom tools, native skills, native guardrail) and OpenAI gpt-4o-mini.
+
+- **[PASSPORT.md](PASSPORT.md)**: architecture, key decisions, lessons learned (start here)
+- **[EVALUATION.md](EVALUATION.md)**: 70 / 70 code-graded checks, speed and cost per reply
+
+## Quick start (Windows, PowerShell, from this folder)
+
+```powershell
+.\run.ps1 setup          # once: .venv with Python 3.12 + packages
+.\run.ps1 build          # once: build catalog.db from data\
+.\run.ps1 web            # web chat: http://127.0.0.1:8000   admin: http://127.0.0.1:8000/admin
+.\run.ps1 chat           # or talk to the agent in the terminal
+```
+
+Under every answer the web chat shows **"How I answered"**: the skills loaded, the catalogue
+searches with their filters, and the result of the automatic fact check.
+
+The OpenAI key comes from the `OPENAI_API_KEY` environment variable, or from a `.env`
+file (see `.env.example`).
+
+## How it works
+
+```
+Customer question
+   -> agent (agent.py): enough info? if not, ONE follow-up question
+   -> skills/ (load_skill): LED replacement, sockets, IP ratings, light colour
+   -> tools (tools.py): search_products, get_product_details   (catalog.db)
+   -> difficult question? search_answered_questions -> else save_difficult_question
+   -> GUARDRAIL (crewai native) = answer_check.py: every price, stock number, wattage and
+      socket in the draft must match what the tools returned; a wrong draft is blocked and
+      rewritten (max 2x), else the customer gets a safe fallback and a human gets the question
+```
+
+| File | Role |
+|---|---|
+| `data/` | input data: English catalogue (demo EUR prices, stock) and category paths |
+| `build_catalog.py` | data -> `catalog.db` (SQLite + full-text search); plain code, no LLM |
+| `catalog.py` | search functions behind the tools |
+| `tools.py` | CrewAI tools; every result is logged for the code check |
+| `agent.py` | the agent, its rules and skills |
+| `skills/<name>/SKILL.md` | shop know-how, loaded only when a question needs it |
+| `knowledge.py` | difficult questions + human answers (`knowledge/questions.json`), matched by meaning |
+| `admin.py` | a human lists and answers difficult questions |
+| `answer_check.py` | code check of every reply against the tool results |
+| `chat.py` | terminal chat |
+| `server.py`, `web/` | web chat + admin page (Starlette); admin needs `ADMIN_TOKEN` or localhost |
+| `test_*.py` | tests (see below) |
+
+## Answering difficult questions
+
+On the admin page (`/admin`), or in the terminal:
+
+```powershell
+.\run.ps1 admin list                                   # open questions, most asked first
+.\run.ps1 admin answer 3 "Delivery within the Netherlands takes 2-3 working days."
+.\run.ps1 admin reject 4
+```
+
+## Tests
+
+```powershell
+.\run.ps1 test catalog          # 20 catalogue searches (no API cost)
+.\run.ps1 test conversations    # 26 conversations graded by code
+.\run.ps1 test knowledge        # the difficult-questions loop, incl. the "wrong country" trap
+.\run.ps1 test guardrail        # fault injection: simulated model slips must never reach the customer
+.\run.ps1 test web              # web server: pages, validation, sessions, admin loop, admin token
+```
+
+Tests write questions to a temporary file, never to the real `knowledge/questions.json`.
+
+## Data notes
+
+- Source: a 2015 database of a real Ukrainian lighting shop, translated to English
+  (upstream scripts in the parent folder: `translate_catalog.py`, `export_category_paths.py`).
+- Prices are **demo prices** in EUR (0.50-250), and stock quantities are random. Not real offers.

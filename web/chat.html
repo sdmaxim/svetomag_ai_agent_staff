@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Svetomag Support</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <div class="logo">S</div>
+  <div><div class="brand">Svetomag support</div><div class="sub">Light bulbs, lamps and outdoor lighting</div></div>
+  <div class="spacer"></div>
+  <span class="badge">Demo shop · example prices</span>
+</div></header>
+
+<main class="chat wrap">
+  <div id="messages" aria-live="polite"></div>
+  <div class="chips" id="chips">
+    <button class="chip">Which LED bulb replaces my old 60W E27 bulb?</button>
+    <button class="chip">I need a ceiling light for my bathroom</button>
+    <button class="chip">Do you have GU10 LED spots with warm light?</button>
+    <button class="chip">How long does delivery take?</button>
+  </div>
+  <form class="send" id="form">
+    <textarea id="input" rows="1" maxlength="1000" placeholder="Ask about a bulb, a lamp, a socket..." aria-label="Your message"></textarea>
+    <button class="primary" id="send" type="submit">Send</button>
+  </form>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let sessionId = null;
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+
+// Small, safe markdown: the text is HTML-escaped FIRST, then only **bold**, lists and line breaks are added.
+function renderMarkdown(text) {
+  const lines = escapeHtml(text).split(/\r?\n/);
+  let html = "", list = null;
+  const close = () => { if (list) { html += `</${list}>`; list = null; } };
+  for (let raw of lines) {
+    const line = raw.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    let m;
+    if ((m = line.match(/^\s*[-*]\s+(.*)/))) {
+      if (list !== "ul") { close(); html += "<ul>"; list = "ul"; }
+      html += `<li>${m[1]}</li>`;
+    } else if ((m = line.match(/^\s*\d+\.\s+(.*)/))) {
+      if (list !== "ol") { close(); html += "<ol>"; list = "ol"; }
+      html += `<li>${m[1]}</li>`;
+    } else if (line.trim() === "") {
+      close();
+    } else {
+      close(); html += `<p>${line}</p>`;
+    }
+  }
+  close();
+  return html;
+}
+
+function renderTrace(t) {
+  if (!t) return "";
+  const items = [];
+  for (const s of t.skills) items.push(`loaded skill <code>${escapeHtml(s)}</code>`);
+  for (const c of t.tools) {
+    const args = Object.entries(c.args).filter(([k]) => k !== "limit")
+      .map(([k, v]) => `${escapeHtml(k)}=${escapeHtml(JSON.stringify(v))}`).join(", ");
+    items.push(`<code>${escapeHtml(c.tool)}</code>(${args}) → ${c.results} result(s)`);
+  }
+  if (t.handed_to_specialist) items.push("handed the question to a specialist");
+  const guard = t.fallback
+    ? `<li class="blocked">fact check: answer could not be verified → safe fallback shown</li>`
+    : t.blocked_drafts
+      ? `<li class="blocked">fact check: blocked ${t.blocked_drafts} wrong draft(s), then passed</li>`
+      : `<li class="clean">fact check: passed (prices, stock, watts, sockets match the catalogue)</li>`;
+  const tools = items.length ? items.map((i) => `<li>${i}</li>`).join("") : "<li>answered without tools</li>";
+  return `<details class="trace"><summary>How I answered</summary><ul>${tools}${guard}</ul></details>`;
+}
+
+function addMessage(role, html) {
+  const div = document.createElement("div");
+  div.className = `msg ${role}`;
+  div.innerHTML = `<div class="bubble">${html}</div>`;
+  $("messages").appendChild(div);
+  $("messages").scrollTop = $("messages").scrollHeight;
+  return div;
+}
+
+async function send(text) {
+  text = text.trim();
+  if (!text) return;
+  $("chips").style.display = "none";
+  addMessage("user", `<p>${escapeHtml(text)}</p>`);
+  $("input").value = "";
+  $("send").disabled = true;
+  const typing = addMessage("agent", `<span class="typing">Looking it up…</span>`);
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({session_id: sessionId, message: text}),
+    });
+    const data = await res.json();
+    if (data.session_id) sessionId = data.session_id;
+    typing.querySelector(".bubble").innerHTML = data.error
+      ? `<p class="error">${escapeHtml(data.error)}</p>`
+      : renderMarkdown(data.reply) + renderTrace(data.trace);
+  } catch (e) {
+    typing.querySelector(".bubble").innerHTML = `<p class="error">Connection problem. Please try again.</p>`;
+  } finally {
+    $("send").disabled = false;
+    $("input").focus();
+    $("messages").scrollTop = $("messages").scrollHeight;
+  }
+}
+
+addMessage("agent", renderMarkdown(
+  "Hello! I can help you find the right bulb or light, check prices and stock, and explain sockets, " +
+  "IP ratings and light colours. What are you looking for?"));
+$("form").addEventListener("submit", (e) => { e.preventDefault(); send($("input").value); });
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send($("input").value); }
+});
+document.querySelectorAll(".chip").forEach((b) => b.addEventListener("click", () => send(b.textContent)));
+</script>
+</body>
+</html>

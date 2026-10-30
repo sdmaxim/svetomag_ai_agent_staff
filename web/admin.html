@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Svetomag Admin</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <div class="logo">S</div>
+  <div><div class="brand">Difficult questions</div><div class="sub">Answer once, and the agent reuses your answer</div></div>
+  <div class="spacer"></div>
+  <a class="badge" href="/">Open the chat</a>
+</div></header>
+
+<main class="wrap">
+  <div class="tabs" id="tabs">
+    <button class="tab on" data-status="open">Open</button>
+    <button class="tab" data-status="answered">Answered</button>
+    <button class="tab" data-status="rejected">Rejected</button>
+    <button class="tab" data-status="all">All</button>
+  </div>
+  <div id="token" style="display:none" class="card">
+    <p class="q">Admin token required</p>
+    <form id="tokenForm" class="row">
+      <input type="password" id="tokenInput" placeholder="ADMIN_TOKEN" aria-label="Admin token">
+      <button class="primary" type="submit">Unlock</button>
+    </form>
+  </div>
+  <div id="list"></div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let status = "open";
+let token = "";
+try { token = sessionStorage.getItem("adminToken") || ""; } catch (e) {}
+
+const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: {"Content-Type": "application/json", "X-Admin-Token": token},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 403) { $("token").style.display = ""; throw new Error("access denied"); }
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function card(q) {
+  const when = (q.last_asked_at || "").replace("T", " ");
+  const answer = q.status === "answered"
+    ? `<div class="ans">${escapeHtml(q.answer)}</div>`
+    : q.status === "open"
+      ? `<form data-id="${q.id}">
+           <textarea rows="3" placeholder="Write the answer the agent should give from now on…" aria-label="Answer"></textarea>
+           <div class="row">
+             <button class="ghost" type="button" data-reject="${q.id}">Reject</button>
+             <button class="primary" type="submit">Save answer</button>
+           </div>
+         </form>`
+      : "";
+  return `<div class="card">
+    <p class="q">${escapeHtml(q.question)}</p>
+    <p class="meta">#${q.id} · ${escapeHtml(q.status)} · asked ${q.times_asked}× · last ${escapeHtml(when)}</p>
+    ${q.reason ? `<p class="why">Why the agent could not answer: ${escapeHtml(q.reason)}</p>` : ""}
+    ${answer}
+  </div>`;
+}
+
+async function load() {
+  try {
+    const data = await api(`/api/admin/questions?status=${status}`);
+    $("token").style.display = "none";
+    $("list").innerHTML = data.questions.length
+      ? data.questions.map(card).join("")
+      : `<p class="empty">No ${status === "all" ? "" : status} questions.</p>`;
+  } catch (e) {
+    $("list").innerHTML = `<p class="empty error">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+$("list").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.target, answer = form.querySelector("textarea").value.trim();
+  if (!answer) return;
+  try { await api(`/api/admin/questions/${form.dataset.id}/answer`, {answer}); load(); }
+  catch (err) { alert(err.message); }
+});
+$("list").addEventListener("click", async (e) => {
+  const id = e.target.dataset.reject;
+  if (!id) return;
+  try { await api(`/api/admin/questions/${id}/reject`, {}); load(); }
+  catch (err) { alert(err.message); }
+});
+$("tabs").addEventListener("click", (e) => {
+  if (!e.target.dataset.status) return;
+  status = e.target.dataset.status;
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t === e.target));
+  load();
+});
+$("tokenForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  token = $("tokenInput").value;
+  try { sessionStorage.setItem("adminToken", token); } catch (err) {}
+  load();
+});
+load();
+</script>
+</body>
+</html>

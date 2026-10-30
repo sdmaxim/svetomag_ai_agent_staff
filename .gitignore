@@ -1,0 +1,19 @@
+# Python environment and caches
+.venv/
+__pycache__/
+*.pyc
+
+# secrets
+.env
+
+# built from data/ by:  .\run.ps1 build
+catalog.db
+
+# real customer questions and human answers - private data, never commit
+knowledge/
+
+# test outputs
+results/
+
+# temporary debug output
+_*.txt
