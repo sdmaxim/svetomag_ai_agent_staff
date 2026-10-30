@@ -2,7 +2,7 @@
 # Dashboard -> New -> Blueprint -> pick this repository -> fill in OPENAI_API_KEY -> Apply.
 services:
   - type: web
-    name: svetomag-support-agent
+    name: svetomag_ai_agent_staff
     runtime: python
     plan: free                      # sleeps after 15 min idle; files written at runtime are lost on restart
     buildCommand: pip install -r requirements.txt && python build_catalog.py
